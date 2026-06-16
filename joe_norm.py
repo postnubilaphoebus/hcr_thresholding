@@ -100,7 +100,7 @@ if __name__ == "__main__":
     from tqdm import tqdm
     fraction_brightness_corr_applied = []
     for agrp_filename in tqdm(all_files):
-        # if "6dpf_huc_h2b_gcamp6s_ch3_nr3c1_ch2_nr3c2_ch1_GC6s_2"  in agrp_filename: # not
+        # if "6dpf_huc_h2b_gcamp6s_ch3_gng8_ch2_kiss1_ch1_GC6s_4" not in agrp_filename: # not
         #     continue
         img = AICSImage(os.path.join("/home/laurids/Desktop/hcrs_coped/examine", agrp_filename))
         img = img.data 
@@ -120,6 +120,8 @@ if __name__ == "__main__":
         #import pdb; pdb.set_trace()
 
         fraction_brightness_corr_applied.append(corr_bool)
+
+        from scipy.interpolate import UnivariateSpline
 
 
        # print("stackbrightnesscorrections" in text)   # the actual test, no slicing
@@ -144,36 +146,51 @@ if __name__ == "__main__":
         img_488 = gcamp_image
 
 
-        if not brightness_correction:
-            # apply some rough brightness correction for the imagejautocontrast stuff
-            gcamp_image_dim_0_part = gcamp_image.shape[0] // 5
-            gcamp_image_cropped = gcamp_image[gcamp_image_dim_0_part:-gcamp_image_dim_0_part]
-            y_fit = np.percentile(gcamp_image_cropped, (90), axis=(1, 2))
-            x_fit = np.arange(len(y_fit))
-            #Inital guess
-            p0_guess = [1.0, 0.01, 5]
-            #bounds for opt
-            lower_bounds = [0, 0, 00]
-            upper_bounds = [np.inf, 5, 100]
+        #if not brightness_correction:
+        # apply some rough brightness correction for the imagejautocontrast stuff
+        gcamp_image_dim_0_part = int(gcamp_image.shape[0] * 0.35)
+        gcamp_image_cropped = gcamp_image[:-gcamp_image_dim_0_part]
+        y_fit = np.mean(gcamp_image_cropped, axis=(1, 2))
+        x_fit = np.arange(len(y_fit))
 
-            popt_robust, pcov_robust = curve_fit(
-                exp_func, x_fit, y_fit,
-                p0=p0_guess,
-                method='trf',
-                loss='soft_l1',
-                f_scale=1.0,
-                maxfev=10000,
-                bounds=(lower_bounds, upper_bounds)
-            )
-            best_a = popt_robust[0]
-            best_b = popt_robust[1]
-            best_c = popt_robust[2]
+        y_smooth = UnivariateSpline(np.arange(len(y_fit)), y_fit, s=5*len(y_fit))(np.arange(len(y_fit)))
 
-            stretched_vals_488 = exp_func(np.arange(len(gcamp_image)), best_a, best_b, best_c) - best_c
-            img_488_adjusted = img_488 / stretched_vals_488[:, None, None]
+        spl = UnivariateSpline(np.arange(len(y_fit)), y_fit, s=len(y_fit))
 
-        else:
-            img_488_adjusted = img_488
+        y_smooth = spl(np.linspace(0, len(y_fit)-1, gcamp_image.shape[0]))
+        y_smooth = y_smooth - y_smooth.min() + 1
+        y_norm /= y_smooth.sum()
+        #y_norm = y_smooth / y_smooth.sum()
+        #Inital guess
+        # p0_guess = [1.0, 0.01, 5]
+        # #bounds for opt
+        # lower_bounds = [0, 0, 00]
+        # upper_bounds = [np.inf, 5, 100]
+
+        # popt_robust, pcov_robust = curve_fit(
+        #     exp_func, x_fit, y_fit,
+        #     p0=p0_guess,
+        #     method='trf',
+        #     loss='soft_l1',
+        #     f_scale=1.0,
+        #     maxfev=10000,
+        #     bounds=(lower_bounds, upper_bounds)
+        # )
+        # best_a = popt_robust[0]
+        # best_b = popt_robust[1]
+        # best_c = popt_robust[2]
+
+        # stretched_vals_488 = exp_func(np.arange(len(gcamp_image)), best_a, best_b, best_c) - best_c
+        # stretched_vals_488 /= stretched_vals_488.max() 
+        # stretched_vals_488 = np.clip(stretched_vals_488, 1e-3, None)
+        # img_488_adjusted = img_488 / stretched_vals_488[:, None, None]
+
+        img_488_adjusted = img_488 / y_norm[:, None, None]
+
+        #import pdb; pdb.set_trace()
+
+        # else:
+        #     img_488_adjusted = img_488
 
         # one_two_vals = np.arange(1, 2, img_488.shape[0])
 
@@ -181,6 +198,9 @@ if __name__ == "__main__":
 
         for _ in range(6):
             img_488_adjusted = imagej_auto_contrast(img_488_adjusted)
+
+        
+     #   import pdb; pdb.set_trace()
 
 
         th = threshold_otsu(img_488_adjusted)
@@ -191,7 +211,7 @@ if __name__ == "__main__":
 
         # --- path length: tissue voxels ABOVE each voxel (light enters at z=0 top) ---
         column_sum_until_z = np.cumsum(contrast_threshold_result[::-1], axis=0)[::-1]
-        column_sum_until_z[contrast_threshold_result == 0] = 0
+        #column_sum_until_z[contrast_threshold_result == 0] = 0
 
         tissue = contrast_threshold_result.astype(bool)
         path_vals = column_sum_until_z[tissue]      # 1D: path length per tissue voxel
@@ -208,9 +228,13 @@ if __name__ == "__main__":
             if m.sum() < MIN_POP:
                 continue
             x_fit.append(np.median(path_vals[m]))           # bin center, path units
-            y_fit.append(np.median(inten_vals[m]))  # your 75th, per bin
+            y_fit.append(np.median(inten_vals[m]))  # mean looked OK
         x_fit = np.asarray(x_fit, float)
         y_fit = np.asarray(y_fit, float)
+        
+        y_fit = y_fit[x_fit > 20]
+        x_fit = x_fit[x_fit > 20]
+        
 
         # --- robust exponential fit (same logic as the per-z version) ---
         p0_guess = [1.0, 0.01, 5]
@@ -237,6 +261,32 @@ if __name__ == "__main__":
         atten = exp_func(column_sum_until_z, best_a, best_b, best_c) - best_c
         atten /= atten.max()                         # normalize: shallow tissue ~ 1
         atten = np.clip(atten, 1e-3, None)           # guard against blow-up at depth
+
+
+        # plt.figure(figsize=(8, 5))
+
+        # # Plot the raw data, distinguishing between the fitted subset and ignored data
+        # plt.scatter(x_fit, y_fit, color='gray', alpha=0.4, label='Tissue Depth and intensity')
+
+        # #import pdb; pdb.set_trace()
+
+        # # Plot the fitted curves over the FULL x range to show extrapolation
+        # plt.plot(x_fit, exp_func(y_fit, *popt_robust), color='red', linewidth=3, label='Robust Fit (soft_l1)')
+
+        # plt.xlabel('X axis')
+        # plt.ylabel('Y axis')
+        # plt.title('Robust Exponential Fitting Extrapolated Over Full Data Range')
+        # plt.legend()
+        # plt.grid(True, alpha=0.3)
+        # plt.tight_layout()
+
+        # plt.show()
+
+
+
+
+
+
         img_488_corrected = np.where(tissue, img_488 / atten, img_488)
 
         # --- HCR channel: SAME path field, wavelength-scaled decay rate ---
